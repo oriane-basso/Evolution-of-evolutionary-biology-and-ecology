@@ -1,0 +1,203 @@
+---
+title: "Finalscript"
+author: "orianebasso, Armand Marie Leroi, Ben Lambert"
+date: "01/06/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(mc.cores = parallel::detectCores())
+
+```
+##### libraries
+`````````{r}
+setwd("~/evolutionsfinalscripts")
+
+library(rstan)
+library(tidyverse)
+library(ggplot2)
+library(data.table)
+library(zoo)
+library(dplyr)
+library(tidyr)
+rstan_options(auto_write = TRUE)
+
+
+````````
+
+##### data
+
+``````{r}
+b<-fread("EE_proportions_1960_2010_for_TS.csv", header=TRUE)
+b<-as.data.frame(b)
+
+````````
+
+``````{r}
+N <- length(unique(b$topic_label)) #number of series 
+Ob<-length(b$topic_label) #number of observations
+
+T<-b%>%
+  group_by(topic_label)%>%
+  summarize(N_years=length(year)) 
+T<-T$N_years #length of series in a vector
+          
+
+index<-c(1)
+subset<-c(2:169)
+for (i in subset) {index[i]<- index[i-1]+T[i-1] }  #start position of each study
+
+X <- as.vector(b$norm_prop) %>% log #vector of all observations
+
+
+groups<-c() #identify the series to which each observation in X belongs
+subset<-c(1:169)
+for (i in subset) { 
+  for (k in index[i]:(index[i]+T[i]-1)) {groups[k]<-i } }
+  
+b<-mutate(b,topicnumber=groups)
+
+series_start<-rep(0,Ob)
+subset2<-c(1:Ob)
+for (i in 1:N){
+  for (k in subset2) {if (k==index[i]) series_start[k]<-1
+}
+}
+
+
+```````
+
+
+
+##### equation 5
+````````{r}
+fit <- stan('equation_five.stan',
+            data=list(X=X,Ob=Ob,N=N,index=index,groups=groups,series_start=series_start),
+            iter=2000,chains=4,control=list(adapt_delta=0.95,stepsize=0.01))
+fit
+`````````
+
+`````{r}
+r<- rstan::extract(fit, 'rho')
+r<-as.data.frame(r)
+r1<-r%>%
+  mutate(iteration=1:nrow(r))
+dim(r1) 
+```````
+
+summarize the rho posteriors for each variable:
+```````{r}
+r2<-r1%>%
+  pivot_longer(-c(iteration), names_to="topicnumber", values_to="estimate")%>%
+  as.data.frame()%>%
+  mutate(topicnumber=gsub("rho.", "", topicnumber))%>%
+  group_by(topicnumber)%>%
+  summarize(median=quantile(estimate, 0.5), LCI=quantile(estimate, 0.025), UCI=quantile(estimate, 0.975))%>%
+  arrange(desc(median))%>%
+  mutate(mode=ifelse(UCI>=1, "Random Walk", "Mean Reverting"))
+````````
+
+How many RW and MR series are there:
+
+``````````{r}
+r2%>%
+group_by(mode)%>%
+summarize(N=length(topicnumber))
+r2<-rename(r2,median5=median,UCI5=UCI,LCI5=LCI)
+write.csv(r2, "ourdata_rw_MR.csv", row.names = FALSE)
+```````
+
+
+##### equation 6
+
+
+``````{r}
+median6<-c()
+LCI6<-c()
+UCI6<-c()
+subset<-c(1:169)
+for (i in subset) { 
+  print(i)
+datastan2<-list(X=X[index[i]:(index[i]+T[i]-1)],L=T[i])
+#print(data_stan2)
+fit <- stan("rw_driftbis.stan",data=datastan2,iter=2000,chains=4)
+#print(fit)
+delta <- rstan::extract(fit, "aDrift")[[1]] # extract delta
+delta1<-as.data.frame(delta)# extract delta
+delta2<-delta1%>%# summarize delta
+summarize(LCI6=quantile(delta, 0.025), median6=quantile(delta, 0.5), UCI6=quantile(delta,0.975))
+print(delta2)
+median6[i]<-delta2$median6
+LCI6[i]<-delta2$LCI6
+UCI6[i]<-delta2$UCI6
+}
+result6<-cbind(LCI6, median6, UCI6)
+result6<-as.data.frame(result6)
+topics<-unique(b$topicnumber)
+result6$topicnumber<-topics 
+topics2<-unique(b$topic_label)
+result6$topiclabel<-topics2
+write.csv(result6, "ourdata_rw_drift_estimates.csv", row.names = FALSE)
+
+```````
+
+##### equation 7
+
+`````{r}
+median7<-c()
+LCI7<-c()
+UCI7<-c()
+subset<-c(1:169)
+for (i in subset) { 
+  print(i)
+datastan2<-list(X=X[index[i]:(index[i]+T[i]-1)],L=T[i])
+#print(data_stan2)
+fit <- stan("stationarybis.stan",data=datastan2,iter=2000, chains=4)
+#print(fit)
+delta <- rstan::extract(fit, "aDrift")[[1]] # extract delta
+delta1<-as.data.frame(delta)# extract delta
+delta2<-delta1%>%# summarize delta
+summarize(LCI7=quantile(delta, 0.025), median7=quantile(delta, 0.5), UCI7=quantile(delta,0.975))
+print(delta2)
+median7[i]<-delta2$median7
+LCI7[i]<-delta2$LCI7
+UCI7[i]<-delta2$UCI7
+}
+result<-cbind(LCI7, median7, UCI7)
+result7<-as.data.frame(result)
+topic<-unique(b$topicnumber)
+result7$topicnumber<-topic 
+topics3<-unique(b$topic_label)
+result7$topiclabel<-topics3
+write.csv(result7, "ourdata_mrp_drift_estimates.csv", row.names = FALSE)
+````````
+
+##### Classification
+```{r}
+
+
+RW <- subset(r2,UCI5>=1) %>%
+merge(result6,by="topicnumber") %>%
+mutate(mode=ifelse((LCI6<=0)&(UCI6>=0), "URW", "BRW"))
+
+MR <- subset(r2,UCI5<1) %>%
+merge(result7,by="topicnumber") %>%
+mutate(mode=ifelse((LCI7<=0)&(UCI7>=0), "UMR", "BMR"))
+
+nouveau<-bind_rows(RW,MR) 
+
+group_by(nouveau,mode) %>%
+  summarize(N=length(topicnumber))
+
+
+
+```
+
+`````````{r}
+finalresult<-b[,c("topicnumber","topic_label")] %>% 
+  merge(nouveau,by="topicnumber")
+write.csv(finalresult, "ourdata_finalresult.csv", row.names = FALSE)
+
+`````````
+

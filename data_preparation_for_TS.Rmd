@@ -1,0 +1,146 @@
+---
+title: "Prepare data for time-serie analysis"
+output: html_document
+---
+
+``````{r}
+rm(list=ls())
+````````
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+####preamble
+
+Here we are going to prepare the data in order to analyse just evolution.
+
+#### libraries
+````{r}
+library(ggplot2)
+library(data.table)
+library(zoo)
+library(dplyr)
+library(tidyr)
+```````
+
+#### data
+
+````{r}
+b<-fread("EEpapers_topics_byyear_05.csv", header=TRUE)
+b<-as.data.frame(b)
+length(unique(b$topic_label))
+````
+Keep the important columns
+````````{r}
+b<-b%>%
+  select(originaltopic, haldtopic,topic_label, topic_use, topic_majortaxon, topic_discipline, year, proportion_present, sd_proportion_present)
+````````
+filter 1900-2010. In fact we are going to start in 1896 since later we are going to use 5 year rollmeans
+``````````{r}
+cutoffyear<-1960
+b2<-b%>%
+filter(year>=cutoffyear-4)%>%
+filter(year<=2010)
+```````````````
+number of topics:
+````{r}
+unique(b2$topic_label)
+length(unique(b2$originaltopic))
+`````
+first we get the rolling mean.  
+````````{r}
+
+b2<-b2%>% group_by(topic_label) %>% 
+mutate(rollmean = rollmean(x = proportion_present, 5, align = "right", fill = NA))%>%
+filter(year>=cutoffyear)%>%
+as.data.frame()
+``````
+ 
+let's first pull out all years in which proportion is zero. and then the maximum year in which each topic is zero
+
+```````{r}
+b3<-b2%>%
+filter(proportion_present==0)%>%
+group_by(topic_label)%>%
+filter(year==max(year))%>%
+select(topic_label, year)%>%
+arrange(desc(year))%>%
+rename(last_zero_year=year)%>%
+as.data.frame()
+````````````
+Merge this dataframe with our original data. And filter all years after the last year zero date
+
+```````{r}
+b4<-merge(b2,b3, by="topic_label", all.x=TRUE)
+b5<-b4%>%
+  mutate(last_zero_year=ifelse(is.na(last_zero_year), cutoffyear, last_zero_year))%>%
+  filter(year>last_zero_year)
+```````
+identify years in which rollmean >= 0.005 (0.5%à. And then filter for the first year in which rollmean >= 0.005
+`````{r}
+b6<-b5%>%
+  filter(rollmean>=0.005)%>%
+  group_by(topic_label)%>%
+  filter(year==min(year))%>%
+  select(topic_label, year)%>%
+arrange(desc(year))%>%
+rename(first_0.005_year=year)%>%
+as.data.frame()
+`````````
+ 
+Let's merge this dataframe with our original data. And filter all years after first_0.005_year
+
+``````{r}
+b7<-merge(b5, b6, by="topic_label", all.x=TRUE)
+b8<-b7%>%
+  mutate(first_0.005_year=ifelse(is.na(first_0.005_year), cutoffyear, first_0.005_year))%>%
+  filter(year>=first_0.005_year)
+```````
+
+Let's check if we have any zero values left:
+
+`````````{r}
+b8%>%
+  filter(proportion_present==0)
+```````
+
+
+````````{r}
+b9<-b8%>%
+  group_by(topic_label)%>%
+  summarize(N_years=length(year))%>%
+  arrange(N_years)
+b9
+``````
+One series is very short:  urban geography will have only 2 years since it begins in 2008 and our data run till 2010.  
+Let's remove it. 
+
+``````{r}
+b10<-b8%>%
+  filter(topic_label!="urban ecology")
+```````
+
+Now let's normalize our proportions by the first year
+```````{r}
+b11<-b10%>%
+  select(topic_label, year, proportion_present)%>%
+  group_by(topic_label)%>%
+  filter(year==min(year))%>%
+  rename(start_year=year, start_year_proportion_present=proportion_present)
+````````
+merge this with our data and then normalize the year and proportions
+````````{r}
+b12<-merge(b10, b11, by="topic_label")
+b12<-b12%>%
+  arrange(topic_label, year)%>%
+  mutate(norm_year=year-start_year, norm_prop=proportion_present/start_year_proportion_present)
+``````
+
+
+
+```````{r}
+b13<-b12%>%
+  select(-c("last_zero_year","first_0.005_year" ))
+write.csv(b13, "EE_proportions_1960_2010_for_TS.csv", row.names=FALSE)
+```````
+
