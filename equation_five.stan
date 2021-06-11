@@ -32,7 +32,7 @@ generated quantities{
   real XSim[Ob];
   real rho_overall;
   for(i in 1:N){
-    XSim[index[i]] = 0; //?? I'm not sure about this part 
+    XSim[index[i]] = 0; 
   }
   rho_overall = normal_rng(mu,rho_sig);
   
